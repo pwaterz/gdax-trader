@@ -38,7 +38,7 @@ elastic-index: gdax-market
 log-level: debug
 ```
 ## Development
-Use the docker-compose in the repository to get development going quickly. Leave the configuration file as shipped defaults, and execute docker-compose.
+Use the docker-compose in the repository to get development going quickly. Leave the configuration file defaults, and execute docker-compose.
 
 ```
 docker-compose up -d
