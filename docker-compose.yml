@@ -1,0 +1,8 @@
+# This sets up all services required by atomx deamon, but assumes
+# that the deamon itself will be run from local go files.
+version: '2'
+services:
+  elasticsearch:
+    image: elasticsearch
+    ports:
+      - "9200:9200"

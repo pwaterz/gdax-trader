@@ -1,0 +1,24 @@
+# ElasticSearch servers
+elastic-hosts:
+  - http://localhost:9200
+
+# Elastic client bulk processor batchsize
+elastic-client-batch-size: 50
+
+# Elastic client bulk processor number of workers
+elastic-client-workers: 5
+
+# Elastic client flush interval in seconds
+elastic-client-flush-interval: 5
+
+# Enable the elastic client stat collector
+elastic-client-stats-enabled: true
+
+# Set to true to enable sniffing of elastic hosts
+elastic-sniff-discovery: false
+
+# The name of the index to store the data
+elastic-index: gdax-market
+
+# Log level. Can be info, debug, or be omitted. If ommitted will default to info.
+log-level: debug
