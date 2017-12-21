@@ -5,6 +5,7 @@ This program is designed to read data from GDAX's streaming api and index the sn
 Install golang
 ```
 git clone git@github.com:pwaterz/gdax-market-indexer.git
+cd gdax-market-indexer
 go get -d ./...
 go build .
 ./gdax-market-indexer -config /path/to/config.yml
