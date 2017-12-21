@@ -1,5 +1,5 @@
 # GDAX market indexer
-This program is designed to read data from GDAX's streaming api and index the snap shots into elastic search.
+This program is designed to read data from GDAX's streaming api and index the order book and ticker data into elastic search.
 
 ## Build
 Install golang
@@ -16,11 +16,16 @@ Modify the yaml file in the repo or create a yaml configuration file
 elastic-hosts:
   - http://localhost:9200
 
+# If password protected, set username and password
+elastic-user: elastic
+
+elastic-password: changeme
+
 # Elastic client bulk processor batchsize
-elastic-client-batch-size: 50
+elastic-client-batch-size: 5
 
 # Elastic client bulk processor number of workers
-elastic-client-workers: 5
+elastic-client-workers: 10
 
 # Elastic client flush interval in seconds
 elastic-client-flush-interval: 5
@@ -33,6 +38,13 @@ elastic-sniff-discovery: false
 
 # The name of the index to store the data
 elastic-index: gdax-market
+
+# Markets to indexe
+gdax-markets:
+  - BTC-USD
+  - BCH-USD
+  - LTC-USD
+  - ETH-USD
 
 # Log level. Can be info, debug, or be omitted. If ommitted will default to info.
 log-level: debug

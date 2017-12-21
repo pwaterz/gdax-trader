@@ -10,12 +10,11 @@ import (
 	"sync"
 	"time"
 
-	elastic "gopkg.in/olivere/elastic.v5"
-
 	"github.com/Sirupsen/logrus"
 	ws "github.com/gorilla/websocket"
 	"github.com/phayes/errors"
 	gdax "github.com/preichenberger/go-gdax"
+	elastic "gopkg.in/olivere/elastic.v5"
 )
 
 var (
@@ -52,14 +51,14 @@ func main() {
 	// Create the index if it doesn't exist
 	initializeIndex()
 
-	wg.Add(1)
-	go indexCoin("BTC-USD")
-	wg.Add(1)
-	go indexCoin("BCH-USD")
-	wg.Add(1)
-	go indexCoin("LTC-USD")
-	wg.Add(1)
-	go indexCoin("ETH-USD")
+	for _, market := range config.GDAXMarkets {
+		logMain.Info("Starting indexer for snap shots " + market)
+		wg.Add(1)
+		go indexMarket(market)
+		logMain.Info("Starting indexer for ticket " + market)
+		wg.Add(1)
+		go indexTicker(market)
+	}
 
 	// Run forever until getting interrupt signal
 	waitForSignal()
@@ -110,7 +109,14 @@ func initializeIndex() {
 
 func initializeElasticClient() {
 	var elasticErr error
-	elasticClient, elasticErr = elastic.NewClient(elastic.SetURL(config.Elastic...), elastic.SetSniff(config.ElasticSniff))
+
+	elasticClient, elasticErr = elastic.NewClient(
+		elastic.SetURL(config.Elastic...),
+		elastic.SetSniff(config.ElasticSniff),
+		elastic.SetBasicAuth(config.ElasticUser,
+			config.ElasticPassword),
+	)
+
 	if elasticErr != nil {
 		logElastic.Fatal(errors.Wraps(elasticErr, "Could not connect to elastic cluster"))
 	}
@@ -156,7 +162,57 @@ func elasticBulkProcessorFinished(id int64, requests []elastic.BulkableRequest, 
 	}
 }
 
-func indexCoin(coin string) {
+func indexTicker(coin string) {
+	var wsDialer ws.Dialer
+	wsConn, _, err := wsDialer.Dial("wss://ws-feed.gdax.com", nil)
+	if err != nil {
+		logStream.Error(err.Error())
+	}
+	defer wsConn.Close()
+
+	subscribe := gdax.Message{
+		Type: "subscribe",
+		Channels: []gdax.MessageChannel{
+			gdax.MessageChannel{
+				Name: "ticker",
+				ProductIds: []string{
+					coin,
+				},
+			},
+		},
+	}
+	if err := wsConn.WriteJSON(subscribe); err != nil {
+		logStream.Error(err)
+	}
+
+	go func() {
+		<-ctx.Done()
+		os.Exit(1)
+	}()
+
+	message := gdax.Message{}
+	ticker := time.NewTicker(tickerTime)
+	defer ticker.Stop()
+
+	for _ = range ticker.C {
+		if err := wsConn.ReadJSON(&message); err != nil {
+			logStream.Error(err.Error())
+			continue
+		}
+
+		if message.Time.Time().IsZero() {
+			continue
+		}
+
+		r := elastic.NewBulkIndexRequest().
+			Index(config.ElasticIndexName).
+			Type("ticker").
+			Doc(message)
+		elasticBulkProcessor.Add(r)
+	}
+}
+
+func indexMarket(coin string) {
 	var wsDialer ws.Dialer
 	wsConn, _, err := wsDialer.Dial("wss://ws-feed.gdax.com", nil)
 	if err != nil {
@@ -176,7 +232,7 @@ func indexCoin(coin string) {
 		},
 	}
 	if err := wsConn.WriteJSON(subscribe); err != nil {
-		println(err.Error())
+		logStream.Error(err)
 	}
 
 	go func() {
@@ -190,7 +246,7 @@ func indexCoin(coin string) {
 
 	for _ = range ticker.C {
 		if err := wsConn.ReadJSON(&message); err != nil {
-			logElastic.Error(err.Error())
+			logStream.Error(err.Error())
 			continue
 		}
 

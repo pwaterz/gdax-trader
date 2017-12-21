@@ -18,8 +18,11 @@ type Configuration struct {
 	ElasticClientFlushInterval int      `yaml:"elastic-client-flush-interval"`
 	ElasticClientStatsEnabled  bool     `yaml:"elastic-client-stats-enabled"`
 	Elastic                    []string `yaml:"elastic-hosts"`
+	ElasticUser                string   `yaml:"elastic-user,omitempty"`
+	ElasticPassword            string   `yaml:"elastic-password,omitempty"`
 	ElasticSniff               bool     `yaml:"elastic-sniff-discovery"`
 	ElasticIndexName           string   `yaml:"elastic-index"`
+	GDAXMarkets                []string `yaml:"gdax-markets"`
 	LogLevel                   string   `yaml:"log-level,omitempty"` // Valid values are info or debug. Defaults to info.
 }
 
