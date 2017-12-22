@@ -18,23 +18,18 @@ import (
 )
 
 var (
-	wg                   sync.WaitGroup // WaitGroup for clean shutdown
-	ctx                  context.Context
-	elasticClient        *elastic.Client        // Elastic client
-	elasticBulkProcessor *elastic.BulkProcessor // Elastic BulkProcessor
-	config               *Configuration         // Global configuration object
-	tickerTime           = time.Millisecond * 500
+	wg         sync.WaitGroup // WaitGroup for clean shutdown
+	tickerTime = time.Millisecond * 500
 )
 
 func main() {
 	flag.Parse()
 
 	// Create our common context
-	var cancel context.CancelFunc
-	ctx, cancel = context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
 	// Parse configuration
 	var configErr error
-	config, configErr = NewConfiguration(*configLocation)
+	config, configErr := NewConfiguration(*configLocation)
 	if configErr != nil {
 		logMain.Fatal(errors.Wraps(configErr, "Error loading configuration"))
 	}
@@ -46,18 +41,26 @@ func main() {
 		log.Level = logrus.InfoLevel
 	}
 
-	initializeElasticClient()
+	elasticClient, err := initializeElasticClient(ctx, config)
+	if err != nil {
+		logElastic.Fatal(errors.Wraps(err, "Could not connect to elastic cluster"))
+	}
+
+	elasticBulkProcessor, err := initializeElasticBulkProcessor(ctx, elasticClient, config)
+	if err != nil {
+		logElastic.Fatal(errors.Wraps(err, "Could not start bulk processor"))
+	}
 
 	// Create the index if it doesn't exist
-	initializeIndex()
+	initializeIndex(ctx, elasticClient, config)
 
 	for _, market := range config.GDAXMarkets {
 		logMain.Info("Starting indexer for order book " + market)
 		wg.Add(1)
-		go indexOrderBook(market)
+		go indexOrderBook(ctx, config.ElasticIndexName, market, elasticBulkProcessor)
 		logMain.Info("Starting indexer for ticket " + market)
 		wg.Add(1)
-		go indexTicker(market)
+		go indexTicker(ctx, config.ElasticIndexName, market, elasticBulkProcessor)
 	}
 
 	// Run forever until getting interrupt signal
@@ -78,7 +81,7 @@ func waitForSignal() {
 }
 
 // initializeIndex create the index in the configuration if it doesn't exist
-func initializeIndex() {
+func initializeIndex(ctx context.Context, elasticClient *elastic.Client, config *Configuration) {
 	logElastic.Info("Initializing index " + config.ElasticIndexName)
 	exists, existError := elasticClient.IndexExists(config.ElasticIndexName).Do(ctx)
 	if existError != nil {
@@ -107,10 +110,9 @@ func initializeIndex() {
 	}
 }
 
-func initializeElasticClient() {
-	var elasticErr error
-
-	elasticClient, elasticErr = elastic.NewClient(
+// initializeElasticClient creates the configured index if it doesn't exist
+func initializeElasticClient(ctx context.Context, config *Configuration) (*elastic.Client, error) {
+	elasticClient, elasticErr := elastic.NewClient(
 		elastic.SetURL(config.Elastic...),
 		elastic.SetSniff(config.ElasticSniff),
 		elastic.SetBasicAuth(config.ElasticUser,
@@ -118,12 +120,27 @@ func initializeElasticClient() {
 	)
 
 	if elasticErr != nil {
-		logElastic.Fatal(errors.Wraps(elasticErr, "Could not connect to elastic cluster"))
+		return nil, elasticErr
 	}
+
 	logElastic.Info("Elastic client successfully initialized")
 
-	var processorErr error
-	elasticBulkProcessor, processorErr = elasticClient.BulkProcessor().
+	// Gracefully shutdown bulk procesor
+	// todo do this better
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-ctx.Done()
+		logElastic.Info("Shutting elastic client")
+		elasticClient.Stop()
+	}()
+
+	return elasticClient, nil
+}
+
+// initializeElasticBulkProcessor creates an elastic bulk processor based on a configuration object
+func initializeElasticBulkProcessor(ctx context.Context, elasticClient *elastic.Client, config *Configuration) (*elastic.BulkProcessor, error) {
+	elasticBulkProcessor, processorErr := elasticClient.BulkProcessor().
 		Name("embargod-indexer").
 		After(elasticBulkProcessorFinished).
 		Workers(config.ElasticClientWorkers).
@@ -133,12 +150,13 @@ func initializeElasticClient() {
 		Do(ctx)
 
 	if processorErr != nil {
-		logElastic.Fatal(errors.Wraps(processorErr, "Failed to start elastic bulk processor"))
+		return nil, processorErr
 	}
 
 	logElastic.Info("Elastic bulk processor successfully initialized")
-
 	// Gracefully shutdown bulk procesor
+	// todo do this better
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		<-ctx.Done()
@@ -147,9 +165,9 @@ func initializeElasticClient() {
 			logElastic.Error(errors.Wraps(err, "Error shutting down elastic bulk processor"))
 		}
 		logElastic.Info("Successfully shut down elastic bulk processor")
-		logElastic.Info("Shutting elastic client")
-		elasticClient.Stop()
 	}()
+
+	return elasticBulkProcessor, nil
 }
 
 // elasticBulkProcessorFinished is called when the elastic bulk processor finishes trying to send requests to eleastic
@@ -162,17 +180,19 @@ func elasticBulkProcessorFinished(id int64, requests []elastic.BulkableRequest, 
 	}
 }
 
-func restartTicker(coin string) {
+// restartTicker will restart the ticker indexer if there is a panic
+func restartTicker(ctx context.Context, indexName, coin string, elasticBulkProcessor *elastic.BulkProcessor) {
 	if err := recover(); err != nil {
 		logStream.Error("Ticker stream failed, waiting 10 seconds and restatrting")
 		time.Sleep(10 * time.Second)
 		wg.Add(1)
-		indexTicker(coin)
+		indexTicker(ctx, indexName, coin, elasticBulkProcessor)
 	}
 }
 
-func indexTicker(coin string) {
-	defer restartTicker(coin)
+// indexTicker indexes ticket data from gdax
+func indexTicker(ctx context.Context, indexName, coin string, elasticBulkProcessor *elastic.BulkProcessor) {
+	defer restartTicker(ctx, indexName, coin, elasticBulkProcessor)
 	var wsDialer ws.Dialer
 	wsConn, _, err := wsDialer.Dial("wss://ws-feed.gdax.com", nil)
 	if err != nil {
@@ -215,24 +235,26 @@ func indexTicker(coin string) {
 		}
 
 		r := elastic.NewBulkIndexRequest().
-			Index(config.ElasticIndexName).
+			Index(indexName).
 			Type("ticker").
 			Doc(message)
 		elasticBulkProcessor.Add(r)
 	}
 }
 
-func restartOrderBook(coin string) {
+// restartOrderBook auto restarts the index order book indexer in the event of a panic
+func restartOrderBook(ctx context.Context, indexName, coin string, elasticBulkProcessor *elastic.BulkProcessor) {
 	if err := recover(); err != nil {
 		logStream.Error("Order book stream failed, waiting 10 seconds and restatrting")
 		time.Sleep(10 * time.Second)
 		wg.Add(1)
-		indexOrderBook(coin)
+		indexOrderBook(ctx, coin, indexName, elasticBulkProcessor)
 	}
 }
 
-func indexOrderBook(coin string) {
-	defer restartOrderBook(coin)
+// indexOrderBook index order book results from gdax
+func indexOrderBook(ctx context.Context, indexName, coin string, elasticBulkProcessor *elastic.BulkProcessor) {
+	defer restartOrderBook(ctx, indexName, coin, elasticBulkProcessor)
 	var wsDialer ws.Dialer
 	wsConn, _, err := wsDialer.Dial("wss://ws-feed.gdax.com", nil)
 	if err != nil {
@@ -275,7 +297,7 @@ func indexOrderBook(coin string) {
 		}
 
 		r := elastic.NewBulkIndexRequest().
-			Index(config.ElasticIndexName).
+			Index(indexName).
 			Type("snap-shot").
 			Doc(message)
 		elasticBulkProcessor.Add(r)
