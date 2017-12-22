@@ -52,9 +52,9 @@ func main() {
 	initializeIndex()
 
 	for _, market := range config.GDAXMarkets {
-		logMain.Info("Starting indexer for snap shots " + market)
+		logMain.Info("Starting indexer for order book " + market)
 		wg.Add(1)
-		go indexMarket(market)
+		go indexOrderBook(market)
 		logMain.Info("Starting indexer for ticket " + market)
 		wg.Add(1)
 		go indexTicker(market)
@@ -162,7 +162,17 @@ func elasticBulkProcessorFinished(id int64, requests []elastic.BulkableRequest, 
 	}
 }
 
+func restartTicker(coin string) {
+	if err := recover(); err != nil {
+		logStream.Error("Ticker stream failed, waiting 10 seconds and restatrting")
+		time.Sleep(10 * time.Second)
+		wg.Add(1)
+		indexTicker(coin)
+	}
+}
+
 func indexTicker(coin string) {
+	defer restartTicker(coin)
 	var wsDialer ws.Dialer
 	wsConn, _, err := wsDialer.Dial("wss://ws-feed.gdax.com", nil)
 	if err != nil {
@@ -212,7 +222,17 @@ func indexTicker(coin string) {
 	}
 }
 
-func indexMarket(coin string) {
+func restartOrderBook(coin string) {
+	if err := recover(); err != nil {
+		logStream.Error("Order book stream failed, waiting 10 seconds and restatrting")
+		time.Sleep(10 * time.Second)
+		wg.Add(1)
+		indexOrderBook(coin)
+	}
+}
+
+func indexOrderBook(coin string) {
+	defer restartOrderBook(coin)
 	var wsDialer ws.Dialer
 	wsConn, _, err := wsDialer.Dial("wss://ws-feed.gdax.com", nil)
 	if err != nil {
